@@ -1,0 +1,27 @@
+services:
+  api:
+    environment:
+      APP_ENV: production
+      DEMO_MODE: "false"
+  worker:
+    environment:
+      APP_ENV: production
+      DEMO_MODE: "false"
+  scheduler:
+    environment:
+      APP_ENV: production
+      DEMO_MODE: "false"
+  frontend:
+    ports: !override
+      - "80:8080"
+      - "443:8443"
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+      TLS_EMAIL: ${TLS_EMAIL:?Set TLS_EMAIL}
+    volumes:
+      - ./deploy/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  caddy-data:
+  caddy-config:

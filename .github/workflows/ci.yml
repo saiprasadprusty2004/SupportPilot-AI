@@ -1,0 +1,137 @@
+name: Verify SupportPilot
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+      - run: pip install -r backend/requirements.lock -e './backend[test]'
+      - run: ruff check backend scripts
+      - run: pytest backend/tests -q
+      - run: python scripts/check_file_guide.py
+      - run: python scripts/export_openapi.py
+      - run: git diff --exit-code backend/openapi.json
+  frontend:
+    runs-on: ubuntu-latest
+    env:
+      DEMO_MODE: 'true'
+      APP_URL: http://127.0.0.1:4173
+      DATABASE_URL: sqlite:///./data/browser-ci.db
+      DEMO_E2E_URL: http://127.0.0.1:4173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.lock -e './backend'
+      - name: Start fixture API
+        run: |
+          python -m app.cli demo > /tmp/supportpilot-api.log 2>&1 &
+          python - <<'PY'
+          import time, urllib.request
+          for attempt in range(30):
+              try:
+                  urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)
+                  break
+              except Exception:
+                  time.sleep(1)
+          else:
+              raise SystemExit('Fixture API did not become ready')
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run generate:api
+        working-directory: frontend
+      - run: git diff --exit-code frontend/src/lib/api.generated.ts
+      - run: npm run build
+        working-directory: frontend
+      - run: node scripts/check_bundle.mjs
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+      - run: node scripts/audit_frontend.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-test-results
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+            artifacts/lighthouse.*
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: supportpilot
+          POSTGRES_PASSWORD: ci_admin
+          POSTGRES_DB: supportpilot
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U supportpilot" --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+    env:
+      DATABASE_URL: postgresql+psycopg://supportpilot_app:ci_app@localhost:5432/supportpilot
+      WORKER_DATABASE_URL: postgresql+psycopg://supportpilot_worker:ci_worker@localhost:5432/supportpilot
+      MIGRATION_DATABASE_URL: postgresql+psycopg://supportpilot:ci_admin@localhost:5432/supportpilot
+      POSTGRES_TEST_URL: postgresql+psycopg://supportpilot_app:ci_app@localhost:5432/supportpilot
+      POSTGRES_ADMIN_TEST_URL: postgresql+psycopg://supportpilot:ci_admin@localhost:5432/supportpilot
+      DEMO_MODE: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.lock -e './backend[test]'
+      - run: |
+          PGPASSWORD=ci_admin psql -h localhost -U supportpilot -d supportpilot -c "CREATE ROLE supportpilot_app LOGIN PASSWORD 'ci_app' NOSUPERUSER NOBYPASSRLS NOINHERIT; CREATE ROLE supportpilot_worker LOGIN PASSWORD 'ci_worker' NOSUPERUSER NOBYPASSRLS NOINHERIT; REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
+      - run: alembic upgrade head
+        working-directory: backend
+      - run: python -m app.cli setup-checkpoints
+      - run: pytest backend/tests/test_postgres.py backend/tests/test_distributed.py -q
+      - name: Install CPU semantic retrieval dependencies
+        run: |
+          pip install 'torch>=2.6,<3' --index-url https://download.pytorch.org/whl/cpu
+          pip install -e './backend[embeddings]'
+      - name: Verify real semantic embeddings and pgvector retrieval
+        env:
+          RUN_EMBEDDING_TESTS: '1'
+        run: pytest backend/tests/test_live.py::test_real_local_semantic_embeddings backend/tests/test_postgres.py::test_real_semantic_pgvector_rag_with_tenant_filter -q
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker compose config --quiet
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: frontend/Dockerfile
+          push: false
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend

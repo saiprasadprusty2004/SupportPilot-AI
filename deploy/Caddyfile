@@ -1,0 +1,23 @@
+:8080 {
+    encode zstd gzip
+    respond /healthz "ok" 200
+    handle /api/* {
+        request_body {
+            max_size 26MB
+        }
+        reverse_proxy api:8000 {
+            flush_interval -1
+        }
+    }
+    handle {
+        root * /srv
+        try_files {path} /index.html
+        file_server
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+        X-Frame-Options DENY
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+}

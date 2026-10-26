@@ -1,0 +1,117 @@
+name: supportpilot
+x-backend: &backend
+  image: ${GHCR_IMAGE_PREFIX:-supportpilot}-backend:${IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  restart: unless-stopped
+  environment: &environment
+    APP_ENV: ${APP_ENV:-development}
+    DEMO_MODE: ${DEMO_MODE:-true}
+    APP_URL: ${APP_URL:-http://localhost:8080}
+    DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://supportpilot_app:local_app_password@postgres:5432/supportpilot}
+    WORKER_DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://supportpilot_worker:local_worker_password@postgres:5432/supportpilot}
+    REDIS_URL: redis://redis:6379/0
+    SECRET_KEY: ${SECRET_KEY:-development-only-change-before-production}
+    ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    GROQ_API_KEY: ${GROQ_API_KEY:-}
+    GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+    COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
+    COMPOSIO_GMAIL_AUTH_CONFIG: ${COMPOSIO_GMAIL_AUTH_CONFIG:-}
+    COMPOSIO_SLACK_AUTH_CONFIG: ${COMPOSIO_SLACK_AUTH_CONFIG:-}
+    COMPOSIO_GOOGLEDRIVE_AUTH_CONFIG: ${COMPOSIO_GOOGLEDRIVE_AUTH_CONFIG:-}
+    GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+    STORAGE_PATH: /app/data/uploads
+    S3_BUCKET: ${S3_BUCKET:-}
+    S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+    EMBEDDING_REVISION: ${EMBEDDING_REVISION:-c9745ed1d9f207416be6d2e6f8de32d1f16199bf}
+    WORKSPACE_CONCURRENCY: ${WORKSPACE_CONCURRENCY:-2}
+    GLOBAL_CONCURRENCY: ${GLOBAL_CONCURRENCY:-20}
+    GROQ_REQUESTS_PER_MINUTE: ${GROQ_REQUESTS_PER_MINUTE:-20}
+    GROQ_TOKENS_PER_MINUTE: ${GROQ_TOKENS_PER_MINUTE:-7000}
+  volumes:
+    - app-data:/app/data
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: supportpilot
+      POSTGRES_DB: supportpilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_admin_password}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-local_app_password}
+      WORKER_DB_PASSWORD: ${WORKER_DB_PASSWORD:-local_worker_password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/01-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supportpilot -d supportpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  migrate:
+    image: ${GHCR_IMAGE_PREFIX:-supportpilot}-backend:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      <<: *environment
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgresql+psycopg://supportpilot:local_admin_password@postgres:5432/supportpilot}
+    command: ["sh", "-c", "alembic upgrade head && python -m app.cli setup-checkpoints"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    <<: *backend
+    environment:
+      <<: *environment
+      WORKER_DATABASE_URL: ""
+    expose: ["8000"]
+  worker:
+    <<: *backend
+    command: ["celery", "-A", "app.services.jobs:celery", "worker", "--loglevel=WARNING", "--queues=agent,ingestion,outbound", "--concurrency=4"]
+    healthcheck:
+      disable: true
+  scheduler:
+    <<: *backend
+    command: ["python", "-m", "app.scheduler"]
+    healthcheck:
+      disable: true
+  frontend:
+    image: ${GHCR_IMAGE_PREFIX:-supportpilot}-frontend:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  app-data:

@@ -1,0 +1,66 @@
+# Local configuration and credentials (keep the safe template)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python environments, packaging, and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+
+# JavaScript dependencies, build output, and caches
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Local application storage, embeddings, uploads, and checkpoints
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Test, coverage, browser, and performance artifacts
+artifacts/
+test-results/
+playwright-report/
+blob-report/
+coverage/
+htmlcov/
+.coverage*
+coverage.xml
+
+# Logs and local backup archives
+*.log
+/backups/
+*.dump
+*.sql.gz
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
